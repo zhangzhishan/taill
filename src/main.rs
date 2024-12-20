@@ -3,7 +3,7 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher, Event, EventKind, Confi
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::sync::{mpsc::{channel, Receiver}, Arc, Mutex};
+use std::sync::{mpsc::{channel, Receiver, RecvTimeoutError}, Arc, Mutex};
 use std::time::Duration;
 use std::env;
 use std::path::PathBuf;
@@ -56,9 +56,11 @@ fn main() -> notify::Result<()> {
 
     let pattern_str = matches.get_one::<String>("pattern").unwrap();
     let pattern = Pattern::new(&pattern_str).expect("Failed to create pattern");
+    println!("Watching pattern: {:?}", pattern_str);
     // Get folder path from the pattern_str
     let current_dir = env::current_dir().unwrap();
     let folder = PathBuf::from(&pattern_str).parent().map(PathBuf::from).unwrap_or_else(|| current_dir);
+    println!("Watching full folder: {:?}", folder);
 
     let (tx, rx) = channel();
 
@@ -67,9 +69,10 @@ fn main() -> notify::Result<()> {
 
     // Start the file watcher in non-recursive mode for the current directory
     let watcher_config = Config::default()
-                                    .with_poll_interval(Duration::from_secs(2))
+                                    .with_poll_interval(Duration::from_secs(1))
                                     .with_compare_contents(true);
     let mut watcher: RecommendedWatcher = Watcher::new(tx, watcher_config)?;
+    // let full_path = PathBuf::from("D:\\code\\taill\\target\\debug\\deps");
     watcher.watch(folder.as_path(), RecursiveMode::NonRecursive)?;
 
     let mut open_files = HashMap::new();
@@ -79,11 +82,18 @@ fn main() -> notify::Result<()> {
             Ok(Err(e)) => eprintln!("watch error: {:?}", e),
             Ok(Ok(event)) => match event {
                 Event { kind: EventKind::Modify(_), paths, .. } | Event { kind: EventKind::Create(_), paths, .. } => {
+                    println!("Event: {:?}", paths);
                     for path in paths {
-                        if pattern.matches_path(&path) && !open_files.contains_key(&path) {
-                            let file = File::open(&path).unwrap();
+                        let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
+                        println!("pattern matches: {:?}", pattern.matches(&file_name));
+                        println!("open_files: {:?}", open_files);
+                        println!("open_files contains key: {:?}", open_files.contains_key(&file_name));
+                        if pattern.matches(&file_name) && !open_files.contains_key(&file_name) {
+                            // Open the file and start following it if succeed.
+                            let file: File = File::open(&path)?;
+
                             // Add the file to the open files
-                            open_files.insert(path.clone(), file_tx.clone());
+                            open_files.insert(file_name.clone(), file_tx.clone());
                             // Clone the channel so the thread can signal when it should try reading
                             let file_rx_clone = Arc::clone(&file_rx);
                             // Start following the file in a new thread
@@ -93,7 +103,11 @@ fn main() -> notify::Result<()> {
                 }
                 _ => {}
             },
-            Err(e) => eprintln!("watch error: {:?}", e),
+            // Err(RecvTimeoutError::Timeout) => {
+            //     // Timeout occurred, proceed to signal open files
+            //     println!("Timeout");
+            // }
+            Err(e) => eprintln!("recv error: {:?}", e),
         }
 
         // We need to signal all open files that they should check for new content
