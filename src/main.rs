@@ -11,6 +11,17 @@ use std::thread;
 use glob::Pattern;
 use bat::PrettyPrinter;
 
+// Define the DEBUG macro
+#[cfg(debug_assertions)]
+macro_rules! debug {
+    ($($arg:tt)*) => (println!($($arg)*));
+}
+
+#[cfg(not(debug_assertions))]
+macro_rules! debug {
+    ($($arg:tt)*) => {};
+}
+
 fn follow_file(mut file: File, rx: Arc<Mutex<Receiver<()>>>) {
     let mut position = file.seek(SeekFrom::End(0)).unwrap();
     let mut reader = BufReader::new(file);
@@ -67,7 +78,7 @@ fn main() -> notify::Result<()> {
     // Get folder path from the pattern_str
     let current_dir = env::current_dir().unwrap();
     let folder = PathBuf::from(&pattern_str).parent().map(PathBuf::from).unwrap_or_else(|| current_dir);
-    println!("Watching full folder: {:?}", folder);
+    debug!("Watching full folder: {:?}", folder);
 
     let (tx, rx) = channel();
 
@@ -89,12 +100,12 @@ fn main() -> notify::Result<()> {
             Ok(Err(e)) => eprintln!("watch error: {:?}", e),
             Ok(Ok(event)) => match event {
                 Event { kind: EventKind::Modify(_), paths, .. } | Event { kind: EventKind::Create(_), paths, .. } => {
-                    println!("Event: {:?}", paths);
+                    debug!("Event: {:?}", paths);
                     for path in paths {
                         let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
-                        println!("pattern matches: {:?}", pattern.matches(&file_name));
-                        println!("open_files: {:?}", open_files);
-                        println!("open_files contains key: {:?}", open_files.contains_key(&file_name));
+                        debug!("pattern matches: {:?}", pattern.matches(&file_name));
+                        debug!("open_files: {:?}", open_files);
+                        debug!("open_files contains key: {:?}", open_files.contains_key(&file_name));
                         if pattern.matches(&file_name) && !open_files.contains_key(&file_name) {
                             // Open the file and start following it if succeed.
                             let file: File = File::open(&path)?;
