@@ -9,6 +9,7 @@ use std::env;
 use std::path::PathBuf;
 use std::thread;
 use glob::Pattern;
+use bat::PrettyPrinter;
 
 fn follow_file(mut file: File, rx: Arc<Mutex<Receiver<()>>>) {
     let mut position = file.seek(SeekFrom::End(0)).unwrap();
@@ -29,7 +30,13 @@ fn follow_file(mut file: File, rx: Arc<Mutex<Receiver<()>>>) {
                 }
             }
             Ok(_) => {
-                print!("{}", buffer);
+                // print!("{}", buffer);
+                PrettyPrinter::new()
+                    .input_from_bytes(buffer.as_bytes())
+                    .language("log")
+                    .grid(true)
+                    .print()
+                    .unwrap();
                 position += buffer.as_bytes().len() as u64;
                 buffer.clear();
             }
