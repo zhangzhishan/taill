@@ -2,6 +2,12 @@
 name = "taill"
 version = "0.1.0"
 edition = "2021"
+description = "A command-line utility to tail files and watch for changes using pattern matching"
+license = "MIT"
+authors = ["Zhishan Zhang <zhangzhishanlo@gmail.com>"]
+repository = "https://github.com/zhangzhishanlo/taill"
+keywords = ["tail", "watch", "file", "monitor", "cli"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 notify = "7.0.0"
