@@ -3,12 +3,13 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher, Event, EventKind, Confi
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
-use std::sync::{mpsc::{channel, Receiver, RecvTimeoutError}, Arc, Mutex};
+use std::sync::{mpsc::{channel, Receiver}, Arc, Mutex};
 use std::time::Duration;
 use std::env;
 use std::path::PathBuf;
 use std::thread;
 use glob::Pattern;
+use colored::*;
 use bat::PrettyPrinter;
 
 // Define the DEBUG macro
@@ -22,7 +23,7 @@ macro_rules! debug {
     ($($arg:tt)*) => {};
 }
 
-fn follow_file(mut file: File, rx: Arc<Mutex<Receiver<()>>>, is_new_file: bool) {
+fn follow_file(mut file: File, rx: Arc<Mutex<Receiver<()>>>, is_new_file: bool, filename: String) {
     // For new files, start from beginning to dump content. For existing files, start from end.
     let mut position = if is_new_file {
         0u64
@@ -46,13 +47,27 @@ fn follow_file(mut file: File, rx: Arc<Mutex<Receiver<()>>>, is_new_file: bool) 
                 }
             }
             Ok(_) => {
-                // print!("{}", buffer);
-                PrettyPrinter::new()
-                    .input_from_bytes(buffer.as_bytes())
-                    .language("log")
-                    .grid(true)
-                    .print()
-                    .unwrap();
+                // Remove newline and add file prefix with color, then use bat for syntax highlighting
+                let line = buffer.trim_end();
+                if !line.is_empty() {
+                    // Use different colors for different files by hashing filename
+                    let colors = [Color::Cyan, Color::Green, Color::Yellow, Color::Magenta, Color::Blue];
+                    let color_index = filename.chars().map(|c| c as usize).sum::<usize>() % colors.len();
+                    let colored_filename = filename.color(colors[color_index]).bold();
+                    
+                    // Print the file prefix first
+                    print!("[{}] ", colored_filename);
+                    
+                    // Use bat for syntax highlighting of the log line without grid
+                    PrettyPrinter::new()
+                        .input_from_bytes(line.as_bytes())
+                        .language("log")
+                        .grid(false)
+                        .header(false)
+                        .line_numbers(false)
+                        .print()
+                        .unwrap();
+                }
                 position += buffer.as_bytes().len() as u64;
                 buffer.clear();
             }
@@ -79,10 +94,19 @@ fn main() -> notify::Result<()> {
 
     let pattern_str = matches.get_one::<String>("pattern").unwrap();
     let pattern = Pattern::new(&pattern_str).expect("Failed to create pattern");
-    println!("Watching pattern: {:?}", pattern_str);
+    println!("{} {}", "Watching pattern:".bright_green().bold(), pattern_str.cyan());
     // Get folder path from the pattern_str
     let current_dir = env::current_dir().unwrap();
-    let folder = PathBuf::from(&pattern_str).parent().map(PathBuf::from).unwrap_or_else(|| current_dir);
+    let pattern_path = PathBuf::from(&pattern_str);
+    let folder = if let Some(parent) = pattern_path.parent() {
+        if parent.as_os_str().is_empty() {
+            current_dir
+        } else {
+            parent.to_path_buf()
+        }
+    } else {
+        current_dir
+    };
     debug!("Watching full folder: {:?}", folder);
 
     let (tx, rx) = channel();
@@ -108,10 +132,12 @@ fn main() -> notify::Result<()> {
                     debug!("Create Event: {:?}", paths);
                     for path in paths {
                         let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
-                        debug!("pattern matches: {:?}", pattern.matches(&file_name));
+                        let full_path_str = path.to_string_lossy().to_string();
+                        let matches_pattern = pattern.matches(&file_name) || pattern.matches(&full_path_str);
+                        debug!("pattern matches: {:?}", matches_pattern);
                         debug!("open_files: {:?}", open_files);
                         debug!("open_files contains key: {:?}", open_files.contains_key(&file_name));
-                        if pattern.matches(&file_name) && !open_files.contains_key(&file_name) {
+                        if matches_pattern && !open_files.contains_key(&file_name) {
                             // Open the file and start following it if succeed.
                             let file: File = File::open(&path)?;
 
@@ -120,7 +146,7 @@ fn main() -> notify::Result<()> {
                             // Clone the channel so the thread can signal when it should try reading
                             let file_rx_clone = Arc::clone(&file_rx);
                             // Start following the file in a new thread - this is a new file
-                            thread::spawn(move || follow_file(file, file_rx_clone, true));
+                            thread::spawn(move || follow_file(file, file_rx_clone, true, file_name.clone()));
                         }
                     }
                 }
@@ -128,10 +154,12 @@ fn main() -> notify::Result<()> {
                     debug!("Modify Event: {:?}", paths);
                     for path in paths {
                         let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
-                        debug!("pattern matches: {:?}", pattern.matches(&file_name));
+                        let full_path_str = path.to_string_lossy().to_string();
+                        let matches_pattern = pattern.matches(&file_name) || pattern.matches(&full_path_str);
+                        debug!("pattern matches: {:?}", matches_pattern);
                         debug!("open_files: {:?}", open_files);
                         debug!("open_files contains key: {:?}", open_files.contains_key(&file_name));
-                        if pattern.matches(&file_name) && !open_files.contains_key(&file_name) {
+                        if matches_pattern && !open_files.contains_key(&file_name) {
                             // Open the file and start following it if succeed.
                             let file: File = File::open(&path)?;
 
@@ -140,7 +168,7 @@ fn main() -> notify::Result<()> {
                             // Clone the channel so the thread can signal when it should try reading
                             let file_rx_clone = Arc::clone(&file_rx);
                             // Start following the file in a new thread - this is an existing file
-                            thread::spawn(move || follow_file(file, file_rx_clone, false));
+                            thread::spawn(move || follow_file(file, file_rx_clone, false, file_name.clone()));
                         }
                     }
                 }
@@ -192,7 +220,7 @@ mod tests {
         // For testing, we'll verify the file position behavior
         thread::spawn(move || {
             // This would normally print the content, we're testing the seeking behavior
-            follow_file(file_clone, rx_clone, true);
+            follow_file(file_clone, rx_clone, true, "test_file.log".to_string());
         });
 
         // Give the thread a moment to start
@@ -221,7 +249,7 @@ mod tests {
         let rx_clone = Arc::clone(&rx);
         
         thread::spawn(move || {
-            follow_file(file_clone, rx_clone, false);
+            follow_file(file_clone, rx_clone, false, "existing_file.log".to_string());
         });
 
         // Give the thread a moment to start
@@ -330,7 +358,6 @@ mod tests {
 
     #[test]
     fn test_error_handling() {
-        use std::fs;
         use tempfile::tempdir;
         
         // Test opening non-existent file
