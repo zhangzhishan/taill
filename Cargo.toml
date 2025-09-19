@@ -1,6 +1,6 @@
 [package]
 name = "taill"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "A command-line utility to tail files and watch for changes using pattern matching"
 license = "MIT"
