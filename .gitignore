@@ -1,1 +1,8 @@
 /target
+
+# Test files
+test_file.log
+test_long_path.log
+
+# Claude Code
+.claude/
