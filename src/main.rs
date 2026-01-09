@@ -1,17 +1,33 @@
 use clap::{Command, Arg};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher, EventKind, Config};
-use notify::event::ModifyKind;
+use notify::{PollWatcher, RecursiveMode, Watcher, EventKind, Config};
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::sync::{mpsc::{channel, Receiver, Sender}, Arc, Mutex};
 use std::time::Duration;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread;
 use glob::Pattern;
 use colored::*;
 use bat::PrettyPrinter;
+
+/// Opens a file for reading with shared access on Windows.
+/// This allows other processes to read and write to the file while we're reading it.
+#[cfg(windows)]
+fn open_file_shared(path: &Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE = 0x7
+    OpenOptions::new()
+        .read(true)
+        .share_mode(0x7)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_file_shared(path: &Path) -> std::io::Result<File> {
+    File::open(path)
+}
 
 // Define the DEBUG macro
 #[cfg(debug_assertions)]
@@ -130,22 +146,62 @@ fn main() -> notify::Result<()> {
 
     let (tx, rx) = channel();
 
-    // Start the file watcher in non-recursive mode for the folder
+    // Start the file watcher using PollWatcher for reliable cross-platform file monitoring
     let watcher_config = Config::default()
-                                    .with_poll_interval(Duration::from_secs(1))
+                                    .with_poll_interval(Duration::from_millis(500))
                                     .with_compare_contents(true);
-    let mut watcher: RecommendedWatcher = Watcher::new(tx, watcher_config)?;
+    let mut watcher: PollWatcher = PollWatcher::new(tx, watcher_config)?;
     watcher.watch(folder.as_path(), RecursiveMode::NonRecursive)?;
 
     // Map of filename -> Sender<Signal>
     let mut open_files: HashMap<String, Sender<Signal>> = HashMap::new();
+
+    // Scan for existing files that match the pattern on startup
+    if let Ok(entries) = std::fs::read_dir(&folder) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let file_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+
+            // Check if this file matches the pattern
+            let relative_path = path.strip_prefix(&current_dir).unwrap_or(&path);
+            let relative_path_str = relative_path.to_string_lossy();
+            let full_path_str = path.to_string_lossy();
+
+            let matches_pattern = pattern.matches(&file_name) ||
+                                 pattern.matches(&relative_path_str) ||
+                                 pattern.matches(&full_path_str);
+
+            if matches_pattern {
+                debug!("Opening existing file on startup: {}", file_name);
+                match open_file_shared(&path) {
+                    Ok(file) => {
+                        let (file_tx, file_rx) = channel();
+                        let file_rx = Arc::new(Mutex::new(file_rx));
+                        open_files.insert(file_name.clone(), file_tx);
+
+                        let fname = file_name.clone();
+                        // For existing files at startup, start from the end (is_new_file = false)
+                        thread::spawn(move || follow_file(file, file_rx, false, fname));
+                    }
+                    Err(e) => eprintln!("Failed to open file {}: {}", file_name, e),
+                }
+            }
+        }
+    }
 
     loop {
         match rx.recv() {
             Ok(Err(e)) => eprintln!("watch error: {:?}", e),
             Ok(Ok(event)) => {
                 match event.kind {
-                    EventKind::Create(_) | EventKind::Modify(ModifyKind::Data(_)) => {
+                    EventKind::Create(_) | EventKind::Modify(_) => {
                         debug!("Event: {:?}", event);
                         for path in event.paths {
                             let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
@@ -169,7 +225,7 @@ fn main() -> notify::Result<()> {
                                 if !open_files.contains_key(&file_name) {
                                     // New file detected
                                     debug!("Opening new file: {}", file_name);
-                                    match File::open(&path) {
+                                    match open_file_shared(&path) {
                                         Ok(file) => {
                                             let (file_tx, file_rx) = channel();
                                             let file_rx = Arc::new(Mutex::new(file_rx));
@@ -189,8 +245,8 @@ fn main() -> notify::Result<()> {
                             }
                         }
                     }
-                    EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_)) => {
-                        debug!("Remove/Rename Event: {:?}", event);
+                    EventKind::Remove(_) => {
+                        debug!("Remove Event: {:?}", event);
                         for path in event.paths {
                             if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
                                 if open_files.contains_key(file_name) {
