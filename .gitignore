@@ -3,6 +3,10 @@
 # Test files
 test_file.log
 test_long_path.log
+test_logs/
+
+# Windows special files
+nul
 
 # Claude Code
 .claude/
