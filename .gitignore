@@ -10,3 +10,6 @@ nul
 
 # Claude Code
 .claude/
+
+# IDE
+.vscode/
